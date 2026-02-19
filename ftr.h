@@ -13,6 +13,7 @@ extern "C" {
 // FTR is a simple trace writer "Function TRace" that produces fuscia ftx trace
 // files from a simple API. It is designed to be used in high performance code
 // with many threads without a huge overhead.
+#define FTR_MIN_SCOPE_DURATION_NS 100
 
 extern void ftr_open(const char *trace_path);
 extern void ftr_close();
@@ -26,46 +27,48 @@ typedef uint16_t ftr_str_t;   // 1-based string index
 
 extern void ftr_write_span(uint64_t pid, uint64_t tid, const char *name,
                            ftr_timestamp_t start_ns, ftr_timestamp_t end_ns);
+extern void ftr_write_spani(uint16_t name_ref, ftr_timestamp_t start_ns,
+                            ftr_timestamp_t end_ns);
+extern uint16_t ftr_intern_string(const char *s);
 
 // Nanosecond timestamp from a monotonic clock.
 extern ftr_timestamp_t ftr_now_ns(void);
 
+
 struct ftr_event_t {
-  const char *name_ref;
+  ftr_str_t name_ref;
   ftr_timestamp_t start_ns;
 };
 
-static inline struct ftr_event_t ftr_begin_event(const char *name) {
-  struct ftr_event_t e = {name, ftr_now_ns()};
-  return e;
+///
+static inline struct ftr_event_t ftr_begin_event(ftr_str_t name_ref_cache) {
+  return (struct ftr_event_t){name_ref_cache, ftr_now_ns()};
 }
 
 static inline void ftr_end_event(struct ftr_event_t *e) {
-  ftr_timestamp_t end_ns = ftr_now_ns();
-  uint64_t pid = getpid();
-  uint64_t tid = (uint64_t)pthread_self();
-  ftr_write_span(0, 0, e->name_ref, e->start_ns, end_ns);
+  ftr_timestamp_t end = ftr_now_ns();
+  if (end - e->start_ns < FTR_MIN_SCOPE_DURATION_NS)
+    return;
+  ftr_write_spani(e->name_ref, e->start_ns, end);
 }
 
+#ifdef FTR_NO_TRACE
+#define FTR_SCOPE(name)
+#define FTR_FUNCTION()
+#else
 #define FTR_CONCAT_(a, b) a##b
 #define FTR_CONCAT(a, b) FTR_CONCAT_(a, b)
 #define FTR_SCOPE(name)                                                        \
+  static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);      \
   __attribute__((cleanup(ftr_end_event))) struct ftr_event_t FTR_CONCAT(       \
-      __event_, __LINE__) = ftr_begin_event(name)
+      __event_, __LINE__) =                                                    \
+      ftr_begin_event(FTR_CONCAT(__idx_, __LINE__))
 
+// __func__ has a stable per-function pointer in practice (it's a static local
+// array), so we can use the same static-cache trick as FTR_SCOPE.
+#define FTR_FUNCTION() FTR_SCOPE(__PRETTY_FUNCTION__)
+
+#endif
 #ifdef __cplusplus
-
-struct FtrScope {
-  const char *name_ref;
-  ftr_timestamp_t start_ns;
-
-  FtrScope(const char *name) : name_ref(name), start_ns(ftr_now_ns()) {}
-  ~FtrScope() {
-    ftr_timestamp_t end_ns = ftr_now_ns();
-    uint64_t pid = getpid();
-    uint64_t tid = (uint64_t)pthread_self();
-    ftr_write_span(0, 0, name_ref, start_ns, end_ns);
-  }
-};
 }
 #endif

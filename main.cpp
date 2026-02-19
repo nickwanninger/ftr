@@ -1,7 +1,12 @@
 #include "ftr.h"
+#include <thread>
+#include <vector>
 
+
+__attribute__((noinline))
 int fib(int n) {
-  FTR_SCOPE("fib");
+  FTR_FUNCTION();
+
   if (n <= 1) {
     return n;
   }
@@ -9,18 +14,18 @@ int fib(int n) {
 }
 
 int main() {
+
   ftr_open("trace.fxt");
-
-  // for (int i = 0; i < 1000; i++) {
-  //   ftr_write_span(0, 1, "span one", 100, 300);
-  // }
-
   {
-    FTR_SCOPE("main");
-    fib(16);
+
+    FTR_FUNCTION();
+    volatile int sum = 0;
+    for (int j = 0; j < 25; j++) {
+      FTR_SCOPE("thread work");
+      sum += fib(j % 25);
+    }
+
   }
-
-
-  ftr_close();
+  // ftr_close();
   return 0;
 }
