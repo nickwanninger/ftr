@@ -2,3 +2,5 @@
 /main_baseline
 trace.fxt*
 .DS_Store
+
+*.o

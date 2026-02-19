@@ -10,12 +10,16 @@
 extern "C" {
 #endif
 
-// FTR is a simple trace writer "Function TRace" that produces fuscia ftx trace
-// files from a simple API. It is designed to be used in high performance code
-// with many threads without a huge overhead.
-#define FTR_MIN_SCOPE_DURATION_NS 100
+// FTR is a simple trace writer "Function TRace" that produces Fuchsia FXT
+// trace files from a simple API. It is designed to be used in high performance
+// code with many threads without a huge overhead.
+//
+// Tracing starts automatically on program init. Output goes to trace.fxt by
+// default. Control via environment variables:
+//   FTR_TRACE_PATH  — override the output file path
+//   FTR_DISABLE     — set to any value to disable tracing entirely
+#define FTR_MIN_SCOPE_DURATION_NS 0
 
-extern void ftr_open(const char *trace_path);
 extern void ftr_close();
 extern void ftr_debug_dump(void);
 

@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define FXT_MAGIC 0x0016547846040010ULL
@@ -22,15 +23,6 @@ typedef union {
 } fxt_init_hdr;
 
 // String record  (type = 2)
-//
-//  Word 0 — header:
-//   [3:0]   type        = 2
-//   [15:4]  size_words  = 1 + ⌈str_len / 8⌉
-//   [30:16] str_index   1-based; events reference strings by this index
-//   [31]    _reserved
-//   [46:32] str_len     byte length of the string (without padding)
-//   [63:47] _reserved
-//  Words 1..N — UTF-8 string bytes, zero-padded to the next 8-byte boundary
 typedef union {
   struct {
     uint64_t type : 4;
@@ -44,20 +36,6 @@ typedef union {
 } fxt_string_hdr;
 
 // Event record  (type = 4)
-// We only emit DurationComplete (event_type = 4): a single record that
-// encodes both the begin and end of a span — no matching begin/end pairs
-// needed.
-//
-//  Word 0 — header:
-//   [3:0]   type         = 4
-//   [15:4]  size_words   = 3  (header + start_ts + end_ts, no args)
-//   [19:16] event_type   = 4  (DurationComplete)
-//   [23:20] arg_count    = 0
-//   [31:24] thread_ref   1-based index into the thread table
-//   [47:32] category_ref 1-based index into the string table
-//   [63:48] name_ref     1-based index into the string table
-//  Word 1 — begin timestamp (nanoseconds)
-//  Word 2 — end   timestamp (nanoseconds)
 typedef union {
   struct {
     uint64_t type : 4;
@@ -71,12 +49,8 @@ typedef union {
   uint64_t raw;
 } fxt_event_hdr;
 
-#define FXT_MAX_STRINGS 0x7FFF  // max unique interned strings
-#define FXT_STRING_MAXLEN 63 // max string length in bytes
-
-// ---------------------------------------------------------------------------
-// String intern table — flat bump-allocated array, pointer-identity lookup
-// ---------------------------------------------------------------------------
+#define FXT_MAX_STRINGS 0x7FFF // max unique interned strings
+#define FXT_STRING_MAXLEN 63   // max string length in bytes
 
 typedef struct {
   const char *key;
@@ -84,10 +58,6 @@ typedef struct {
 
 static ftr_intern_entry_t intern_pool[FXT_MAX_STRINGS];
 static uint16_t intern_count = 0;
-
-// ---------------------------------------------------------------------------
-// Shared write buffer with spinlock
-// ---------------------------------------------------------------------------
 
 #define FTR_SHARED_BUF_SIZE (256 * 1024 * 1024) // 256 KB
 
@@ -98,8 +68,8 @@ static atomic_flag shared_buf_lock = ATOMIC_FLAG_INIT;
 
 static inline void buf_lock(void) {
   while (atomic_flag_test_and_set_explicit(&shared_buf_lock,
-                                           memory_order_acquire))
-    ;
+                                           memory_order_acquire)) {
+  }
 }
 
 static inline void buf_unlock(void) {
@@ -154,6 +124,8 @@ static inline void rec_str_padded(ftr_record_t *r, const char *s, size_t len) {
 }
 
 static void commit_record(ftr_record_t *r) {
+  if (!out_stream)
+    return;
   buf_lock();
   buf_append_locked(r->data, r->pos);
   buf_unlock();
@@ -165,11 +137,23 @@ static void commit_record(ftr_record_t *r) {
 
 void ftr_debug_dump(void) {}
 
-void ftr_open(const char *trace_path) {
+static int out_stream_is_pipe = 0;
+
+static void ftr_open(const char *trace_path) {
   assert(out_stream == NULL && "ftr_open called while already open");
 
   intern_count = 0;
-  out_stream = fopen(trace_path, "wb");
+
+  size_t len = strlen(trace_path);
+  if (len > 3 && strcmp(trace_path + len - 3, ".gz") == 0) {
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd), "gzip > '%s'", trace_path);
+    out_stream = popen(cmd, "w");
+    out_stream_is_pipe = 1;
+  } else {
+    out_stream = fopen(trace_path, "wb");
+    out_stream_is_pipe = 0;
+  }
 
   ftr_record_t r = {.pos = 0};
   rec_u64(&r, FXT_MAGIC);
@@ -184,20 +168,28 @@ void ftr_open(const char *trace_path) {
   fwrite(r.data, 1, r.pos, out_stream);
 }
 
+__attribute__((constructor)) static void ftr_init(void) {
+  if (getenv("FTR_DISABLE"))
+    return;
+  const char *path = getenv("FTR_TRACE_PATH");
+  ftr_open(path ? path : "trace.fxt.gz");
+}
+
 void ftr_close() {
   buf_lock();
   flush_locked();
   buf_unlock();
-  fclose(out_stream);
+  if (out_stream_is_pipe)
+    pclose(out_stream);
+  else
+    fclose(out_stream);
   out_stream = NULL;
 }
 
 __attribute__((destructor)) static void on_exit(void) {
-  if (out_stream) {
-    fprintf(stderr, "Warning: ftr_close() not called before exit\n");
+  if (out_stream)
     ftr_close();
-  }
-};
+}
 
 static ftr_timestamp_t ftr_start_time_ns = 0;
 
@@ -212,6 +204,9 @@ ftr_timestamp_t ftr_now_ns(void) {
   }
   uint64_t t = now - ftr_start_time_ns;
 
+  // Ensure each nanosecond measurement is unique, even if the clock doesn't
+  // have nanosecond precision. This is a bit of a hack but it prevents issues
+  // with nonsense zero-duration spans and strange ordering in perfetto.
   static uint64_t last = 0;
   if (t <= last)
     t = last + 1;
@@ -251,6 +246,8 @@ void ftr_write_span(uint64_t pid, uint64_t tid, const char *name,
 }
 
 uint16_t ftr_intern_string(const char *s) {
+  if (!out_stream)
+    return 0;
   for (uint16_t i = 0; i < intern_count; i++) {
     if (intern_pool[i].key == s)
       return i + 1;
