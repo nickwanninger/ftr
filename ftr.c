@@ -49,6 +49,27 @@ typedef union {
   uint64_t raw;
 } fxt_event_hdr;
 
+
+
+// header word
+// [0 .. 3]: record type (9)
+// [4 .. 15]: record size (inclusive of this word) as a multiple of 8 bytes
+// [16 .. 30]: log message length in bytes (range 0x0000 to 0x7fff)
+// [31]: always zero (0)
+// [32 .. 39]: thread (thread ref)
+// [40 .. 63]: reserved (must be zero)
+typedef union {
+  struct {
+    uint64_t type : 4;
+    uint64_t size_words : 12;
+    uint64_t msg_len : 15;
+    uint64_t _r0 : 1;
+    uint64_t thread_ref : 8;
+    uint64_t _r1 : 24;
+  };
+  uint64_t raw;
+} fxt_log_hdr;
+
 #define FXT_MAX_STRINGS 0x7FFF // max unique interned strings
 #define FXT_STRING_MAXLEN 63   // max string length in bytes
 
@@ -191,7 +212,6 @@ __attribute__((destructor)) static void on_exit(void) {
     ftr_close();
 }
 
-static ftr_timestamp_t ftr_start_time_ns = 0;
 
 ftr_timestamp_t ftr_now_ns(void) {
   struct timespec ts;
@@ -199,19 +219,15 @@ ftr_timestamp_t ftr_now_ns(void) {
 
   ftr_timestamp_t now =
       (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-  if (ftr_start_time_ns == 0) {
-    ftr_start_time_ns = now - 10;
-  }
-  uint64_t t = now - ftr_start_time_ns;
 
   // Ensure each nanosecond measurement is unique, even if the clock doesn't
   // have nanosecond precision. This is a bit of a hack but it prevents issues
   // with nonsense zero-duration spans and strange ordering in perfetto.
   static uint64_t last = 0;
-  if (t <= last)
-    t = last + 1;
-  last = t;
-  return t;
+  if (now <= last)
+    now = last + 1;
+  last = now;
+  return now;
 }
 
 void ftr_write_span(uint64_t pid, uint64_t tid, const char *name,
@@ -301,4 +317,119 @@ void ftr_write_spani(uint16_t name_ref, ftr_timestamp_t start_ns,
   rec_u64(&r, end_ns);
 
   commit_record(&r);
+}
+
+void ftr_write_counteri(uint16_t name_ref, int64_t value) {
+  uint64_t pid = getpid();
+  uint64_t tid = (uint64_t)pthread_self();
+  // header + timestamp + pid + tid + counter_id + arg_header + arg_value
+  size_t size_words = 1 + 3 + 1 + 2;
+
+  fxt_event_hdr ev = {0};
+  ev.type = 4;
+  ev.size_words = (uint64_t)size_words;
+  ev.event_type = 1; // counter
+  ev.arg_count = 1;
+  ev.thread_ref = 0;
+  ev.name_ref = name_ref;
+  ev.category_ref = 0;
+
+  // Argument header: type=3 (int64), size=2 words, name_ref reuses name_ref
+  uint64_t arg_hdr = 0;
+  arg_hdr |= (uint64_t)3;              // type: int64
+  arg_hdr |= (uint64_t)2 << 4;        // size_words: 2
+  arg_hdr |= (uint64_t)name_ref << 16; // arg name
+
+  ftr_record_t r = {.pos = 0};
+  rec_u64(&r, ev.raw);
+  rec_u64(&r, ftr_now_ns());
+  rec_u64(&r, pid);
+  rec_u64(&r, tid);
+  rec_u64(&r, name_ref); // counter_id: use name_ref as stable id
+  rec_u64(&r, value);
+  rec_u64(&r, arg_hdr);
+
+  commit_record(&r);
+}
+
+void ftr_write_marki(uint16_t name_ref) {
+  uint64_t pid = getpid();
+  uint64_t tid = (uint64_t)pthread_self();
+  size_t size_words = 1 + 3;
+
+  fxt_event_hdr ev = {0};
+  ev.type = 4;
+  ev.size_words = (uint64_t)size_words;
+  ev.event_type = 0; // instant
+  ev.arg_count = 0;
+  ev.thread_ref = 0;
+  ev.name_ref = name_ref;
+  ev.category_ref = 0;
+
+  ftr_record_t r = {.pos = 0};
+  rec_u64(&r, ev.raw);
+  rec_u64(&r, ftr_now_ns());
+  rec_u64(&r, pid);
+  rec_u64(&r, tid);
+
+  commit_record(&r);
+}
+
+
+void ftr_log(const char *msg) {
+  uint64_t pid = getpid();
+  uint64_t tid = (uint64_t)pthread_self();
+
+
+  fxt_log_hdr ev = {0};
+  ev.type = 9;
+  ev.thread_ref = 0;
+  ev.msg_len = (uint64_t)strlen(msg);
+  
+  size_t size_words = 1 + (ev.msg_len + 7) / 8;
+  ev.size_words = (uint64_t)size_words;
+
+  ftr_record_t r = {.pos = 0};
+  rec_u64(&r, ev.raw);
+  rec_str_padded(&r, msg, ev.msg_len);
+  commit_record(&r);
+}
+
+
+static inline void write_begin_end(int event_type, const char *cat, const char *msg) {
+  uint64_t pid = getpid();
+  uint64_t tid = (uint64_t)pthread_self();
+
+  int cat_len = (int)strlen(cat); // TODO: string wrapping/interning.
+  int msg_len = (int)strlen(msg); // TODO: string wrapping/interning.
+  size_t cat_words = (cat_len + 7) / 8;
+  size_t msg_words = (msg_len + 7) / 8;
+  size_t size_words = 1 + 3 + cat_words + msg_words;
+
+  fxt_event_hdr ev = {0};
+  ev.type = 4;
+  ev.event_type = event_type;
+  ev.arg_count = 0;
+  ev.thread_ref = 0;
+  ev.name_ref = (uint16_t)(0x8000 | msg_len);
+  ev.category_ref = (uint16_t)(0x8000 | cat_len);
+  ev.size_words = size_words;
+
+  ftr_record_t r = {.pos = 0};
+  rec_u64(&r, ev.raw);
+  rec_u64(&r, ftr_now_ns());
+  rec_u64(&r, pid);
+  rec_u64(&r, tid);
+  rec_str_padded(&r, cat, cat_len);
+  rec_str_padded(&r, msg, msg_len);
+
+  commit_record(&r);
+}
+
+void ftr_begin(const char *cat, const char *msg) {
+  write_begin_end(2, cat, msg);
+}
+
+void ftr_end(const char *cat, const char *msg) {
+  write_begin_end(3, cat, msg);
 }

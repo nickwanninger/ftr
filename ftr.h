@@ -33,7 +33,15 @@ extern void ftr_write_span(uint64_t pid, uint64_t tid, const char *name,
                            ftr_timestamp_t start_ns, ftr_timestamp_t end_ns);
 extern void ftr_write_spani(uint16_t name_ref, ftr_timestamp_t start_ns,
                             ftr_timestamp_t end_ns);
+extern void ftr_write_marki(uint16_t name_ref);
+extern void ftr_write_counteri(uint16_t name_ref, int64_t value);
 extern uint16_t ftr_intern_string(const char *s);
+
+
+extern void ftr_log(const char *msg);
+
+extern void ftr_begin(const char *cat, const char *msg);
+extern void ftr_end(const char *cat, const char *msg);
 
 // Nanosecond timestamp from a monotonic clock.
 extern ftr_timestamp_t ftr_now_ns(void);
@@ -59,6 +67,8 @@ static inline void ftr_end_event(struct ftr_event_t *e) {
 #ifdef FTR_NO_TRACE
 #define FTR_SCOPE(name)
 #define FTR_FUNCTION()
+#define FTR_MARK(name)
+#define FTR_COUNTER(name, value)
 #else
 #define FTR_CONCAT_(a, b) a##b
 #define FTR_CONCAT(a, b) FTR_CONCAT_(a, b)
@@ -71,6 +81,18 @@ static inline void ftr_end_event(struct ftr_event_t *e) {
 // __func__ has a stable per-function pointer in practice (it's a static local
 // array), so we can use the same static-cache trick as FTR_SCOPE.
 #define FTR_FUNCTION() FTR_SCOPE(__PRETTY_FUNCTION__)
+
+#define FTR_MARK(name)                                                         \
+  do {                                                                         \
+    static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);  \
+    ftr_write_marki(FTR_CONCAT(__idx_, __LINE__));                             \
+  } while (0)
+
+#define FTR_COUNTER(name, value)                                               \
+  do {                                                                         \
+    static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);  \
+    ftr_write_counteri(FTR_CONCAT(__idx_, __LINE__), (int64_t)(value));        \
+  } while (0)
 
 #endif
 #ifdef __cplusplus

@@ -1,8 +1,7 @@
 #include "ftr.h"
 #include <stdexcept>
 
-__attribute__((noinline))
-int fib(int n) {
+__attribute__((noinline)) int fib(int n) {
   FTR_FUNCTION();
 
   if (n <= 1) {
@@ -12,35 +11,43 @@ int fib(int n) {
 }
 
 
-
-__attribute__((noinline))
-void foo(int x) {
-  FTR_FUNCTION();
-  // usleep(1000);
-  if (x == 10) {
-    FTR_SCOPE("throwing");
-    throw std::runtime_error("bad");
-  }
-}
-
 int main() {
-  {
+  FTR_FUNCTION();
+  volatile int sum = 0;
 
-    FTR_FUNCTION();
-    volatile int sum = 0;
+  for (int i = 0; i < 4; i++) {
     for (int j = 0; j < 25; j++) {
-      FTR_SCOPE("thread work");
-      try {
-        foo(j);
-      } catch (const std::exception &e) {
-        FTR_SCOPE("AYO");
-        fprintf(stderr, "Caught exception: %s\n", e.what());
-      }
-      FTR_SCOPE("thread work");
-      sum += fib(j % 25);
-    }
+      // FTR_SCOPE("thread work");
+      ftr_begin("main", "A");
+      usleep(10);
+      ftr_end("main", "A");
 
+
+      ftr_begin("main", "B");
+      usleep(10);
+      ftr_end("main", "B");
+
+      fib(12);
+
+      usleep(10);
+      // ftr_log("message");
+      // try {
+      //   foo(j);
+      // } catch (const std::exception &e) {
+      //   FTR_MARK("caught exception");
+      //   FTR_MARK("caught exception");
+      //   FTR_MARK("caught exception");
+      //   FTR_MARK("caught exception");
+      //   FTR_MARK("caught exception");
+      //   FTR_MARK("caught exception");
+      //   FTR_MARK("caught exception");
+      //   // fprintf(stderr, "Caught exception: %s\n", e.what());
+      // }
+      // FTR_SCOPE("thread work");
+      // sum += fib(j % 25);
+    }
   }
+  // usleep(10000);
   // ftr_close();
   return 0;
 }
