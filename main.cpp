@@ -17,19 +17,17 @@ int main() {
 
   for (int i = 0; i < 4; i++) {
     for (int j = 0; j < 25; j++) {
-      // FTR_SCOPE("thread work");
-      ftr_begin("main", "A");
-      usleep(10);
-      ftr_end("main", "A");
+      FTR_SCOPE("thread work");
+      // ftr_begin("main", "A");
+      // nanosleep((const struct timespec[]){{0, 10000000L}}, NULL);
+      // ftr_end("main", "A");
 
 
-      ftr_begin("main", "B");
-      usleep(10);
-      ftr_end("main", "B");
+      // ftr_begin("main", "B");
+      // nanosleep((const struct timespec[]){{0, 10000000L}}, NULL);
+      // ftr_end("main", "B");
 
       fib(12);
-
-      usleep(10);
       // ftr_log("message");
       // try {
       //   foo(j);

@@ -49,8 +49,6 @@ typedef union {
   uint64_t raw;
 } fxt_event_hdr;
 
-
-
 // header word
 // [0 .. 3]: record type (9)
 // [4 .. 15]: record size (inclusive of this word) as a multiple of 8 bytes
@@ -152,6 +150,59 @@ static void commit_record(ftr_record_t *r) {
   buf_unlock();
 }
 
+#if defined(__i386__) || defined(__x86_64__)
+static inline uint64_t rdtsc(void) {
+  uint32_t lo, hi;
+  __asm__ volatile("rdtscp" : "=a"(lo), "=d"(hi));
+  return ((uint64_t)hi << 32) | lo;
+}
+static uint64_t tsc_freq_calibrate(void) {
+  // Warm up
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+
+  // Take multiple samples and use the best (shortest wall time = least noise)
+  uint64_t best_tsc_delta = 0;
+  uint64_t best_ns_delta = 0;
+
+  for (int i = 0; i < 50; i++) {
+    struct timespec t1, t2;
+
+    // Align to a clock tick boundary to reduce start jitter
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    struct timespec t1_check;
+    do {
+      clock_gettime(CLOCK_MONOTONIC, &t1_check);
+    } while (t1_check.tv_nsec == t1.tv_nsec && t1_check.tv_sec == t1.tv_sec);
+    t1 = t1_check;
+
+    uint64_t tsc1 = rdtsc();
+
+    // Sleep long enough to amortize clock granularity
+    // 10ms gives ~0.01% accuracy at typical TSC frequencies
+    struct timespec sleep = {0, 10000000}; // 10ms
+    nanosleep(&sleep, NULL);
+
+    uint64_t tsc2 = rdtsc();
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+
+    uint64_t ns_delta =
+        (t2.tv_sec - t1.tv_sec) * 1000000000ULL + (t2.tv_nsec - t1.tv_nsec);
+    uint64_t tsc_delta = tsc2 - tsc1;
+
+    // Pick the iteration with smallest wall time (least scheduling noise)
+    if (best_ns_delta == 0 || ns_delta < best_ns_delta) {
+      best_ns_delta = ns_delta;
+      best_tsc_delta = tsc_delta;
+    }
+  }
+
+  // freq = ticks / seconds = tsc_delta / (ns_delta / 1e9)
+  //      = tsc_delta * 1e9 / ns_delta
+  return best_tsc_delta * 1000000000ULL / best_ns_delta;
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -176,6 +227,12 @@ static void ftr_open(const char *trace_path) {
     out_stream_is_pipe = 0;
   }
 
+  uint64_t ticks_per_sec = 1000000000ULL;
+#if defined(__i386__) || defined(__x86_64__)
+  ticks_per_sec = tsc_freq_calibrate();
+  printf("Calibrated TSC frequency: %lu Hz\n", ticks_per_sec);
+#endif
+
   ftr_record_t r = {.pos = 0};
   rec_u64(&r, FXT_MAGIC);
 
@@ -183,7 +240,7 @@ static void ftr_open(const char *trace_path) {
   init.type = 1;
   init.size_words = 2;
   rec_u64(&r, init.raw);
-  rec_u64(&r, 1000000000ULL); // ticks_per_sec = 1ns
+  rec_u64(&r, ticks_per_sec);
 
   // Write directly — no other threads are active yet.
   fwrite(r.data, 1, r.pos, out_stream);
@@ -207,13 +264,15 @@ void ftr_close() {
   out_stream = NULL;
 }
 
-__attribute__((destructor)) static void on_exit(void) {
+__attribute__((destructor)) static void __ftr_on_exit(void) {
   if (out_stream)
     ftr_close();
 }
 
-
 ftr_timestamp_t ftr_now_ns(void) {
+#if defined(__i386__) || defined(__x86_64__)
+  return rdtsc();
+#else
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
 
@@ -228,6 +287,7 @@ ftr_timestamp_t ftr_now_ns(void) {
     now = last + 1;
   last = now;
   return now;
+#endif
 }
 
 void ftr_write_span(uint64_t pid, uint64_t tid, const char *name,
@@ -337,7 +397,7 @@ void ftr_write_counteri(uint16_t name_ref, int64_t value) {
   // Argument header: type=3 (int64), size=2 words, name_ref reuses name_ref
   uint64_t arg_hdr = 0;
   arg_hdr |= (uint64_t)3;              // type: int64
-  arg_hdr |= (uint64_t)2 << 4;        // size_words: 2
+  arg_hdr |= (uint64_t)2 << 4;         // size_words: 2
   arg_hdr |= (uint64_t)name_ref << 16; // arg name
 
   ftr_record_t r = {.pos = 0};
@@ -375,17 +435,15 @@ void ftr_write_marki(uint16_t name_ref) {
   commit_record(&r);
 }
 
-
 void ftr_log(const char *msg) {
   uint64_t pid = getpid();
   uint64_t tid = (uint64_t)pthread_self();
-
 
   fxt_log_hdr ev = {0};
   ev.type = 9;
   ev.thread_ref = 0;
   ev.msg_len = (uint64_t)strlen(msg);
-  
+
   size_t size_words = 1 + (ev.msg_len + 7) / 8;
   ev.size_words = (uint64_t)size_words;
 
@@ -395,8 +453,8 @@ void ftr_log(const char *msg) {
   commit_record(&r);
 }
 
-
-static inline void write_begin_end(int event_type, const char *cat, const char *msg) {
+static inline void write_begin_end(int event_type, const char *cat,
+                                   const char *msg) {
   uint64_t pid = getpid();
   uint64_t tid = (uint64_t)pthread_self();
 
@@ -430,6 +488,4 @@ void ftr_begin(const char *cat, const char *msg) {
   write_begin_end(2, cat, msg);
 }
 
-void ftr_end(const char *cat, const char *msg) {
-  write_begin_end(3, cat, msg);
-}
+void ftr_end(const char *cat, const char *msg) { write_begin_end(3, cat, msg); }
