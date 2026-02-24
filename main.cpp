@@ -16,12 +16,13 @@ int main() {
   for (int j = 0; j < 25; j++) {
     FTR_SCOPE("thread work");
 
-    ftr_log("message");
+    ftr_logf("message");
 
     int res = fib(12);
 
     ftr_logf("fib(%d) = %d", j, res);
     ftr_logf("Looping around");
+    ftr_logf("still going...");
   }
   return 0;
 }

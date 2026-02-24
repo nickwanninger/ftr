@@ -37,7 +37,9 @@ extern void ftr_write_marki(uint16_t name_ref);
 extern void ftr_write_counteri(uint16_t name_ref, int64_t value);
 extern uint16_t ftr_intern_string(const char *s);
 
-extern void ftr_log(const char *msg);
+// Like printf, but emits to a mark point in the trace location.  This is useful
+// for debugging and adding ad-hoc events to the trace.  The overhead is pretty
+// high (~100ns on my mac). As such, FTR_NO_TRACE disables codegen entirely.
 extern void ftr_logf(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 
@@ -71,11 +73,14 @@ static inline void ftr_end_event(struct ftr_event_t *e) {
 #define FTR_FUNCTION()
 #define FTR_MARK(name)
 #define FTR_COUNTER(name, value)
+#define ftr_logf(msg, ...) /* nothing. */
 #else
 #define FTR_CONCAT_(a, b) a##b
 #define FTR_CONCAT(a, b) FTR_CONCAT_(a, b)
 #define FTR_SCOPE(name)                                                        \
-  static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);     \
+  static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = 0;                           \
+  if (FTR_CONCAT(__idx_, __LINE__) == 0)                                       \
+    FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);                    \
   __attribute__((cleanup(ftr_end_event))) struct ftr_event_t FTR_CONCAT(       \
       __event_, __LINE__) = ftr_begin_event(FTR_CONCAT(__idx_, __LINE__))
 

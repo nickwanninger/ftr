@@ -463,24 +463,6 @@ void ftr_write_marki(uint16_t name_ref) {
   commit_record(&r);
 }
 
-void ftr_log(const char *msg) {
-  uint64_t pid = g_ftr_pid;
-  uint64_t tid = get_local_thread_id();
-
-  fxt_log_hdr ev = {0};
-  ev.type = 9;
-  ev.thread_ref = 0;
-  ev.msg_len = (uint64_t)strlen(msg);
-
-  size_t size_words = 1 + (ev.msg_len + 7) / 8;
-  ev.size_words = (uint64_t)size_words;
-
-  ftr_record_t r = {.pos = 0};
-  rec_u64(&r, ev.raw);
-  rec_str_padded(&r, msg, ev.msg_len);
-  commit_record(&r);
-}
-
 void ftr_logf(const char *fmt, ...) {
   char msg[256];
   va_list args;
