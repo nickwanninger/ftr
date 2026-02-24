@@ -1,9 +1,22 @@
 #include "./ftr.h"
 #include <assert.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef __APPLE__
+static const char *os_getprogname(void) { return getprogname(); }
+#elif defined(__linux__)
+#include <errno.h>
+extern char *program_invocation_short_name;
+static const char *os_getprogname(void) {
+  return program_invocation_short_name;
+}
+#else
+static const char *os_getprogname(void) { return "process"; }
+#endif
 
 #define FXT_MAGIC 0x0016547846040010ULL
 // Initialization record  (type = 1, always 2 words)
@@ -210,8 +223,20 @@ static uint64_t tsc_freq_calibrate(void) {
 void ftr_debug_dump(void) {}
 
 static int out_stream_is_pipe = 0;
+static uint64_t g_ftr_pid = 0;
+
+static _Atomic uint64_t next_local_thread_id = 0;
+static __thread uint64_t g_ftr_tid = (uint64_t)-1;
+
+static uint64_t get_local_thread_id(void) {
+  if (g_ftr_tid == (uint64_t)-1) {
+    g_ftr_tid = atomic_fetch_add(&next_local_thread_id, 1);
+  }
+  return g_ftr_tid;
+}
 
 static void ftr_open(const char *trace_path) {
+  g_ftr_pid = (uint64_t)getpid();
   assert(out_stream == NULL && "ftr_open called while already open");
 
   intern_count = 0;
@@ -245,6 +270,8 @@ static void ftr_open(const char *trace_path) {
 
   // Write directly — no other threads are active yet.
   fwrite(r.data, 1, r.pos, out_stream);
+
+  ftr_set_process_name(os_getprogname());
 }
 
 __attribute__((constructor)) static void ftr_init(void) {
@@ -357,8 +384,8 @@ uint16_t ftr_intern_string(const char *s) {
 void ftr_write_spani(uint16_t name_ref, ftr_timestamp_t start_ns,
                      ftr_timestamp_t end_ns) {
 
-  uint64_t pid = getpid();
-  uint64_t tid = (uint64_t)pthread_self();
+  uint64_t pid = g_ftr_pid;
+  uint64_t tid = get_local_thread_id();
   size_t size_words = 1 + 3 + 1;
 
   fxt_event_hdr ev = {0};
@@ -381,8 +408,8 @@ void ftr_write_spani(uint16_t name_ref, ftr_timestamp_t start_ns,
 }
 
 void ftr_write_counteri(uint16_t name_ref, int64_t value) {
-  uint64_t pid = getpid();
-  uint64_t tid = (uint64_t)pthread_self();
+  uint64_t pid = g_ftr_pid;
+  uint64_t tid = get_local_thread_id();
   // header + timestamp + pid + tid + counter_id + arg_header + arg_value
   size_t size_words = 1 + 3 + 1 + 2;
 
@@ -414,8 +441,8 @@ void ftr_write_counteri(uint16_t name_ref, int64_t value) {
 }
 
 void ftr_write_marki(uint16_t name_ref) {
-  uint64_t pid = getpid();
-  uint64_t tid = (uint64_t)pthread_self();
+  uint64_t pid = g_ftr_pid;
+  uint64_t tid = get_local_thread_id();
   size_t size_words = 1 + 3;
 
   fxt_event_hdr ev = {0};
@@ -437,8 +464,8 @@ void ftr_write_marki(uint16_t name_ref) {
 }
 
 void ftr_log(const char *msg) {
-  uint64_t pid = getpid();
-  uint64_t tid = (uint64_t)pthread_self();
+  uint64_t pid = g_ftr_pid;
+  uint64_t tid = get_local_thread_id();
 
   fxt_log_hdr ev = {0};
   ev.type = 9;
@@ -454,10 +481,47 @@ void ftr_log(const char *msg) {
   commit_record(&r);
 }
 
+void ftr_logf(const char *fmt, ...) {
+  char msg[256];
+  va_list args;
+  va_start(args, fmt);
+  int len = vsnprintf(msg, sizeof(msg), fmt, args);
+  va_end(args);
+
+  if (len < 0)
+    return;
+  if (len > 255)
+    len = 255;
+
+  uint64_t pid = g_ftr_pid;
+  uint64_t tid = get_local_thread_id();
+
+  size_t msg_words = (len + 7) / 8;
+  size_t size_words = 1 + 3 + msg_words;
+
+  fxt_event_hdr ev = {0};
+  ev.type = 4;
+  ev.size_words = (uint64_t)size_words;
+  ev.event_type = 0; // instant
+  ev.arg_count = 0;
+  ev.thread_ref = 0;
+  ev.name_ref = (uint16_t)(0x8000 | len);
+  ev.category_ref = 0;
+
+  ftr_record_t r = {.pos = 0};
+  rec_u64(&r, ev.raw);
+  rec_u64(&r, ftr_now_ns());
+  rec_u64(&r, pid);
+  rec_u64(&r, tid);
+  rec_str_padded(&r, msg, len);
+
+  commit_record(&r);
+}
+
 static inline void write_begin_end(int event_type, const char *cat,
                                    const char *msg) {
-  uint64_t pid = getpid();
-  uint64_t tid = (uint64_t)pthread_self();
+  uint64_t pid = g_ftr_pid;
+  uint64_t tid = get_local_thread_id();
 
   int cat_len = (int)strlen(cat); // TODO: string wrapping/interning.
   int msg_len = (int)strlen(msg); // TODO: string wrapping/interning.
@@ -490,3 +554,26 @@ void ftr_begin(const char *cat, const char *msg) {
 }
 
 void ftr_end(const char *cat, const char *msg) { write_begin_end(3, cat, msg); }
+
+void ftr_set_process_name(const char *name) {
+  if (!name)
+    return;
+  size_t name_len = strlen(name);
+  if (name_len > 255)
+    name_len = 255;
+  size_t name_words = (name_len + 7) / 8;
+  size_t size_words = 2 + name_words;
+
+  uint64_t hdr = 0;
+  hdr |= (uint64_t)7; // Record Type: Kernel Object
+  hdr |= (uint64_t)size_words << 4;
+  hdr |= (uint64_t)1 << 16;                   // Object Type: 1 (Process)
+  hdr |= (uint64_t)(0x8000 | name_len) << 24; // Name string ref (inline)
+
+  ftr_record_t r = {.pos = 0};
+  rec_u64(&r, hdr);
+  rec_u64(&r, g_ftr_pid); // Word 1: Object ID
+  rec_str_padded(&r, name, name_len);
+
+  commit_record(&r);
+}
