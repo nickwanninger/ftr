@@ -230,7 +230,8 @@ static void ftr_open(const char *trace_path) {
   uint64_t ticks_per_sec = 1000000000ULL;
 #if defined(__i386__) || defined(__x86_64__)
   ticks_per_sec = tsc_freq_calibrate();
-  printf("Calibrated TSC frequency: %lu Hz\n", ticks_per_sec);
+  printf("[ftr] Calibrated TSC frequency: %lu Hz\n",
+         (unsigned long)ticks_per_sec);
 #endif
 
   ftr_record_t r = {.pos = 0};
