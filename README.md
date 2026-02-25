@@ -49,7 +49,15 @@ void my_function() {
 }
 ```
 
-Tracing starts automatically on program init and the output goes to `trace.fxt.gz` in the working directory.
+By default, tracing does **not** start automatically. Use `ftr_init_file()` or `ftr_init()` to start it explicitly, or set `FTR_TRACE_PATH` to auto-initialize on startup.
+
+```c
+// Write to a file (NULL falls back to FTR_TRACE_PATH env var, then "trace.fxt.gz")
+ftr_init_file("my_trace.fxt");
+
+// Or supply your own callback for custom output (network socket, in-memory buffer, etc.)
+ftr_init(my_write_fn, my_userdata);
+```
 
 ## API
 
@@ -95,8 +103,8 @@ void process(work_item *item) {
 
 ## Environment variables
 
-- `FTR_TRACE_PATH`: Override the output file path (supports `.gz` extension for compressed output (requires `gzip` command to be installed))
-- `FTR_DISABLE`: Set to any value to disable tracing entirely at runtime. \*this still has overhead of checking a condition at runtime, but does not emit any trace data.
+- `FTR_TRACE_PATH`: If set at startup, auto-initializes tracing to that file path. Supports `.gz` extension for gzip-compressed output (requires `gzip` on `$PATH`).
+- `FTR_DISABLE`: Set to any value to disable tracing entirely at runtime.
 
 ## Disabling at compile time
 

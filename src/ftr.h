@@ -1,8 +1,8 @@
 #pragma once
 
 #include <pthread.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -14,13 +14,30 @@ extern "C" {
 // trace files from a simple API. It is designed to be used in high performance
 // code with many threads without a huge overhead.
 //
-// Tracing starts automatically on program init. Output goes to trace.fxt by
-// default. Control via environment variables:
-//   FTR_TRACE_PATH  — override the output file path
+// By default, tracing does NOT start automatically unless FTR_TRACE_PATH is
+// set in the environment. Use ftr_init() or ftr_init_file() to start explicitly.
+//
+// Environment variables:
+//   FTR_TRACE_PATH  — if set, auto-initializes to that file on startup
 //   FTR_DISABLE     — set to any value to disable tracing entirely
 #define FTR_MIN_SCOPE_DURATION_NS 0
 
-extern void ftr_close();
+// Called with raw FXT bytes whenever the internal buffer flushes.
+// Always invoked under the shared buffer lock.
+typedef void (*ftr_write_fn)(const void *data, size_t len, void *userdata);
+
+// Initialize with a custom output callback. The caller owns `userdata` and
+// must release it after calling ftr_close().
+// No-op if tracing is already active.
+extern void ftr_init(ftr_write_fn write_fn, void *userdata);
+
+// Initialize to a file. If `path` is NULL, reads FTR_TRACE_PATH env var,
+// falling back to "trace.fxt.gz". Handles .gz extension via popen+gzip.
+// Registers atexit(ftr_close) automatically.
+// No-op if tracing is already active.
+extern void ftr_init_file(const char *path);
+
+extern void ftr_close(void);
 extern void ftr_debug_dump(void);
 
 // An FXT trace atom.

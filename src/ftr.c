@@ -95,7 +95,10 @@ static uint16_t intern_count = 0;
 #define FTR_SHARED_BUF_SIZE (256 * 1024 * 1024) // 256 KB
 
 static int trace_enabled = 0;
-static FILE *out_stream = NULL;
+static ftr_write_fn g_write_fn = NULL;
+static void        *g_write_userdata = NULL;
+static FILE        *g_file_handle = NULL;
+static int          g_file_is_pipe = 0;
 static uint8_t shared_buf[FTR_SHARED_BUF_SIZE];
 static size_t shared_buf_pos = 0;
 static atomic_flag shared_buf_lock = ATOMIC_FLAG_INIT;
@@ -112,17 +115,26 @@ static inline void buf_unlock(void) {
 
 // Must be called with the lock held.
 static void flush_locked(void) {
-  if (shared_buf_pos > 0) {
-    fwrite(shared_buf, 1, shared_buf_pos, out_stream);
-    shared_buf_pos = 0;
-  }
+  if (shared_buf_pos == 0)
+    return;
+  if (g_write_fn)
+    g_write_fn(shared_buf, shared_buf_pos, g_write_userdata);
+  shared_buf_pos = 0;
 }
 
 // Append `len` bytes from `data` into the shared buffer, flushing first if
-// there isn't enough room. Must be called with the lock held.
+// there isn't enough room.  The entire `len` bytes are guaranteed to land in a
+// single flush – a record is never split across two g_write_fn calls.
+// Must be called with the lock held.
 static void buf_append_locked(const void *data, size_t len) {
   if (shared_buf_pos + len > FTR_SHARED_BUF_SIZE) {
     flush_locked();
+  }
+  // Record larger than the whole buffer — write it directly so it stays atomic.
+  if (len > FTR_SHARED_BUF_SIZE) {
+    if (g_write_fn)
+      g_write_fn(data, len, g_write_userdata);
+    return;
   }
   memcpy(shared_buf + shared_buf_pos, data, len);
   shared_buf_pos += len;
@@ -224,7 +236,6 @@ static uint64_t tsc_freq_calibrate(void) {
 
 void ftr_debug_dump(void) {}
 
-static int out_stream_is_pipe = 0;
 static uint64_t g_ftr_pid = 0;
 
 static _Atomic uint64_t next_local_thread_id = 0;
@@ -237,22 +248,18 @@ static uint64_t get_local_thread_id(void) {
   return g_ftr_tid;
 }
 
-static void ftr_open(const char *trace_path) {
+static void file_write_fn(const void *data, size_t len, void *userdata) {
+  fwrite(data, 1, len, (FILE *)userdata);
+}
+
+static void ftr_on_exit(void) {
+  if (__atomic_load_n(&trace_enabled, __ATOMIC_RELAXED))
+    ftr_close();
+}
+
+static void ftr_do_init(void) {
   g_ftr_pid = (uint64_t)getpid();
-  assert(out_stream == NULL && "ftr_open called while already open");
-
   intern_count = 0;
-
-  size_t len = strlen(trace_path);
-  if (len > 3 && strcmp(trace_path + len - 3, ".gz") == 0) {
-    char cmd[4096];
-    snprintf(cmd, sizeof(cmd), "gzip > '%s'", trace_path);
-    out_stream = popen(cmd, "w");
-    out_stream_is_pipe = 1;
-  } else {
-    out_stream = fopen(trace_path, "wb");
-    out_stream_is_pipe = 0;
-  }
 
   uint64_t ticks_per_sec = 1000000000ULL;
 #if defined(__i386__) || defined(__x86_64__)
@@ -261,45 +268,73 @@ static void ftr_open(const char *trace_path) {
          (unsigned long)ticks_per_sec);
 #endif
 
+  // Write header directly — trace_enabled is still 0, so commit_record would drop it.
   ftr_record_t r = {.pos = 0};
   rec_u64(&r, FXT_MAGIC);
-
   fxt_init_hdr init = {0};
   init.type = 1;
   init.size_words = 2;
   rec_u64(&r, init.raw);
   rec_u64(&r, ticks_per_sec);
+  g_write_fn(r.data, r.pos, g_write_userdata);
 
-  // Write directly — no other threads are active yet.
-  fwrite(r.data, 1, r.pos, out_stream);
-
-  ftr_set_process_name(os_getprogname());
   __atomic_store_n(&trace_enabled, 1, __ATOMIC_RELEASE);
-}
-
-static void ftr_on_exit(void) {
-  if (__atomic_load_n(&trace_enabled, __ATOMIC_RELAXED))
-    ftr_close();
-}
-
-__attribute__((constructor)) static void ftr_init(void) {
-  if (getenv("FTR_DISABLE"))
-    return;
-  const char *path = getenv("FTR_TRACE_PATH");
-  ftr_open(path ? path : "trace.fxt.gz");
+  ftr_set_process_name(os_getprogname());
   atexit(ftr_on_exit);
 }
 
-void ftr_close() {
+void ftr_init(ftr_write_fn write_fn, void *userdata) {
+  if (__atomic_load_n(&trace_enabled, __ATOMIC_RELAXED))
+    return;
+  g_write_fn = write_fn;
+  g_write_userdata = userdata;
+  ftr_do_init();
+}
+
+void ftr_init_file(const char *path) {
+  if (__atomic_load_n(&trace_enabled, __ATOMIC_RELAXED))
+    return;
+  if (!path) path = getenv("FTR_TRACE_PATH");
+  if (!path) path = "trace.fxt.gz";
+
+  size_t len = strlen(path);
+  if (len > 3 && strcmp(path + len - 3, ".gz") == 0) {
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd), "gzip > '%s'", path);
+    g_file_handle = popen(cmd, "w");
+    g_file_is_pipe = 1;
+  } else {
+    g_file_handle = fopen(path, "wb");
+    g_file_is_pipe = 0;
+  }
+  g_write_fn = file_write_fn;
+  g_write_userdata = g_file_handle;
+  ftr_do_init();
+}
+
+__attribute__((constructor)) static void ftr_auto_init(void) {
+  if (getenv("FTR_DISABLE"))
+    return;
+  const char *path = getenv("FTR_TRACE_PATH");
+  if (!path)
+    return;
+  ftr_init_file(path);
+}
+
+void ftr_close(void) {
+  if (!__atomic_load_n(&trace_enabled, __ATOMIC_RELAXED))
+    return;
   __atomic_store_n(&trace_enabled, 0, __ATOMIC_RELEASE);
   buf_lock();
   flush_locked();
   buf_unlock();
-  if (out_stream_is_pipe)
-    pclose(out_stream);
-  else
-    fclose(out_stream);
-  out_stream = NULL;
+  if (g_file_handle) {
+    if (g_file_is_pipe) pclose(g_file_handle);
+    else fclose(g_file_handle);
+    g_file_handle = NULL;
+  }
+  g_write_fn = NULL;
+  g_write_userdata = NULL;
 }
 
 ftr_timestamp_t ftr_now_ns(void) {
