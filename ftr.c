@@ -440,6 +440,50 @@ void ftr_write_counteri(uint16_t name_ref, int64_t value) {
   commit_record(&r);
 }
 
+static _Atomic uint64_t next_flow_id = 1;
+
+uint64_t ftr_new_flow_id(void) {
+  return atomic_fetch_add(&next_flow_id, 1);
+}
+
+static void ftr_write_flow_event(uint16_t name_ref, uint64_t flow_id,
+                                 int event_type) {
+  uint64_t pid = g_ftr_pid;
+  uint64_t tid = get_local_thread_id();
+  // header + timestamp + pid + tid + flow_correlation_id
+  size_t size_words = 1 + 3 + 1;
+
+  fxt_event_hdr ev = {0};
+  ev.type = 4;
+  ev.size_words = (uint64_t)size_words;
+  ev.event_type = event_type;
+  ev.arg_count = 0;
+  ev.thread_ref = 0;
+  ev.name_ref = name_ref;
+  ev.category_ref = 0;
+
+  ftr_record_t r = {.pos = 0};
+  rec_u64(&r, ev.raw);
+  rec_u64(&r, ftr_now_ns());
+  rec_u64(&r, pid);
+  rec_u64(&r, tid);
+  rec_u64(&r, flow_id);
+
+  commit_record(&r);
+}
+
+void ftr_write_flow_begini(uint16_t name_ref, uint64_t flow_id) {
+  ftr_write_flow_event(name_ref, flow_id, 8);
+}
+
+void ftr_write_flow_stepi(uint16_t name_ref, uint64_t flow_id) {
+  ftr_write_flow_event(name_ref, flow_id, 9);
+}
+
+void ftr_write_flow_endi(uint16_t name_ref, uint64_t flow_id) {
+  ftr_write_flow_event(name_ref, flow_id, 10);
+}
+
 void ftr_write_marki(uint16_t name_ref) {
   uint64_t pid = g_ftr_pid;
   uint64_t tid = get_local_thread_id();
