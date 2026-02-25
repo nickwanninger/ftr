@@ -21,6 +21,21 @@ cmake -B build -DFTR_BUILD_EXAMPLES=OFF
 cmake --build build
 ```
 
+### Using with FetchContent
+
+Add ftr to your project as a static library with no examples:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(ftr
+  GIT_REPOSITORY https://github.com/nickwanninger/ftr.git
+  GIT_TAG        main)
+set(FTR_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(ftr)
+
+target_link_libraries(myapp PRIVATE ftr_static)
+```
+
 ## Usage
 
 ```c
