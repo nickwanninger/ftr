@@ -43,15 +43,25 @@ static work_item *dequeue() {
 static void consumer_thread() {
   work_item *item;
   while ((item = dequeue()) != nullptr) {
-    FTR_SCOPE_FLOW_END("work", item);
-    fib(item->value);
-    delete item;
+
+    if (item->value > 0) {
+      {
+        FTR_SCOPE_FLOW_STEP("work", item);
+        usleep(10 + item->value);
+      }
+      item->value--;
+      enqueue(item);
+    } else {
+      {
+        FTR_SCOPE_FLOW_END("work", item);
+        usleep(10 + item->value);
+      }
+      delete item;
+    }
   }
 }
 
 int main() {
-  FTR_FUNCTION();
-
   int ncpus = std::thread::hardware_concurrency();
   if (ncpus < 1)
     ncpus = 1;
@@ -62,10 +72,11 @@ int main() {
     workers.emplace_back(consumer_thread);
 
   // Producer: use the work_item pointer as the flow ID
-  for (int j = 0; j < 25000; j++) {
-    auto *item = new work_item{25 + (j % 10)};
+  for (int j = 0; j < 100; j++) {
+    auto *item = new work_item{100};
 
     FTR_SCOPE_FLOW_BEGIN("enqueue", item);
+
     enqueue(item);
   }
 

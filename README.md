@@ -38,7 +38,7 @@ Tracing starts automatically on program init and the output goes to `trace.fxt.g
 
 ### Scopes
 
-- **`FTR_SCOPE(name)`** — Records a duration span from this point to the end of the enclosing block. The name is interned on first use.
+- **`FTR_SCOPE(name)`** — Records a duration span from this point to the end of the enclosing block. The name _must_ be a `const char *` (static string).
 - **`FTR_FUNCTION()`** — Shorthand for `FTR_SCOPE(__PRETTY_FUNCTION__)`.
 
 ### Marks and counters
@@ -79,7 +79,7 @@ void process(work_item *item) {
 ## Environment variables
 
 - `FTR_TRACE_PATH`: Override the output file path (supports `.gz` extension for compressed output (requires `gzip` command to be installed))
-- `FTR_DISABLE`: Set to any value to disable tracing entirely at runtime.
+- `FTR_DISABLE`: Set to any value to disable tracing entirely at runtime. \*this still has overhead of checking a condition at runtime, but does not emit any trace data.
 
 ## Disabling at compile time
 
