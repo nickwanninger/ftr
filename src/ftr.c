@@ -1,4 +1,4 @@
-#include "./ftr.h"
+#include "ftr.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdatomic.h>

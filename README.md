@@ -1,15 +1,30 @@
 # ftr
 
-A minimal [Fuchsia FXT](https://fuchsia.dev/fuchsia-src/reference/tracing/trace-format) trace writer for C/C++. Drop `ftr.c` and `ftr.h` into your build system and start tracing.
-Traces can be viewed in [Perfetto](https://ui.perfetto.dev).
+A minimal [Fuchsia FXT](https://fuchsia.dev/fuchsia-src/reference/tracing/trace-format) trace writer for C/C++. Drop `src/ftr.c` and `src/ftr.h` into your build system, or build as a shared library. Traces can be viewed in [Perfetto](https://ui.perfetto.dev).
 
 On x86, `ftr` uses rdtscp for timestamps after calibration, and has incredibly low overhead.
 On other platforms, it falls back to the more expensive `clock_gettime(CLOCK_MONOTONIC)` (rough nanosecond resolution) on other platforms (Aarch64).
 
+## Building
+
+```sh
+make                          # configure and build
+make install                  # install to /usr/local
+make install PREFIX=~/.local  # install to a custom prefix
+make clean                    # remove build directory
+```
+
+To skip building examples, pass the CMake option directly:
+
+```sh
+cmake -B build -DFTR_BUILD_EXAMPLES=OFF
+cmake --build build
+```
+
 ## Usage
 
 ```c
-#include "ftr.h"
+#include <ftr.h>
 
 void my_function() {
     FTR_SCOPE("my_function");   // records a duration span for this scope

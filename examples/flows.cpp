@@ -1,6 +1,6 @@
-#include "ftr.h"
 #include <condition_variable>
 #include <deque>
+#include <ftr.h>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -63,7 +63,7 @@ int main() {
 
   // Producer: use the work_item pointer as the flow ID
   for (int j = 0; j < 25000; j++) {
-    auto *item = new work_item{12 + (j % 5)};
+    auto *item = new work_item{25 + (j % 10)};
 
     FTR_SCOPE_FLOW_BEGIN("enqueue", item);
     enqueue(item);

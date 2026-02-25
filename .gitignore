@@ -1,6 +1,5 @@
-/main
-/main_baseline
+/build/
+compile_commands.json
 trace.fxt*
 .DS_Store
-
 *.o
