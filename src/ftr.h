@@ -97,17 +97,21 @@ static inline void ftr_end_event(struct ftr_event_t *e) {
 
 #define FTR_MARK(name)                                                         \
   do {                                                                         \
-    static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);   \
+    static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = 0;                         \
+    if (FTR_CONCAT(__idx_, __LINE__) == 0)                                     \
+      FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);                  \
     ftr_write_marki(FTR_CONCAT(__idx_, __LINE__));                             \
   } while (0)
 
 #define FTR_COUNTER(name, value)                                               \
   do {                                                                         \
-    static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);   \
+    static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = 0;                         \
+    if (FTR_CONCAT(__idx_, __LINE__) == 0)                                     \
+      FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);                  \
     ftr_write_counteri(FTR_CONCAT(__idx_, __LINE__), (int64_t)(value));        \
   } while (0)
 
-#define FTR_SCOPE_FLOW_BEGIN(name, flow_id)                                          \
+#define FTR_SCOPE_FLOW_BEGIN(name, flow_id)                                    \
   static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = 0;                           \
   if (FTR_CONCAT(__idx_, __LINE__) == 0)                                       \
     FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);                    \
@@ -116,16 +120,16 @@ static inline void ftr_end_event(struct ftr_event_t *e) {
   ftr_write_flow_begini(FTR_CONCAT(__idx_, __LINE__),                          \
                         (uint64_t)(uintptr_t)(flow_id))
 
-#define FTR_SCOPE_FLOW_STEP(name, flow_id)                                           \
+#define FTR_SCOPE_FLOW_STEP(name, flow_id)                                     \
   static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = 0;                           \
   if (FTR_CONCAT(__idx_, __LINE__) == 0)                                       \
     FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);                    \
   __attribute__((cleanup(ftr_end_event))) struct ftr_event_t FTR_CONCAT(       \
       __event_, __LINE__) = ftr_begin_event(FTR_CONCAT(__idx_, __LINE__));     \
   ftr_write_flow_stepi(FTR_CONCAT(__idx_, __LINE__),                           \
-                        (uint64_t)(uintptr_t)(flow_id))
+                       (uint64_t)(uintptr_t)(flow_id))
 
-#define FTR_SCOPE_FLOW_END(name, flow_id)                                            \
+#define FTR_SCOPE_FLOW_END(name, flow_id)                                      \
   static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = 0;                           \
   if (FTR_CONCAT(__idx_, __LINE__) == 0)                                       \
     FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);                    \

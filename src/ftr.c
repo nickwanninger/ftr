@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#undef ftr_logf
 #ifdef __APPLE__
 static const char *os_getprogname(void) { return getprogname(); }
 #elif defined(__linux__)
@@ -442,9 +443,7 @@ void ftr_write_counteri(uint16_t name_ref, int64_t value) {
 
 static _Atomic uint64_t next_flow_id = 1;
 
-uint64_t ftr_new_flow_id(void) {
-  return atomic_fetch_add(&next_flow_id, 1);
-}
+uint64_t ftr_new_flow_id(void) { return atomic_fetch_add(&next_flow_id, 1); }
 
 static void ftr_write_flow_event(uint16_t name_ref, uint64_t flow_id,
                                  int event_type) {
