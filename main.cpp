@@ -1,11 +1,11 @@
 #include "ftr.h"
-#include <pthread.h>
-#include <stdlib.h>
-#include <unistd.h>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 __attribute__((noinline)) int fib(int n) {
-  // FTR_FUNCTION();
-
   if (n <= 1) {
     return n;
   }
@@ -19,70 +19,65 @@ struct work_item {
   int value;
 };
 
-static work_item *queue[256];
-static volatile int queue_head = 0;
-static volatile int queue_tail = 0;
-static volatile int done = 0;
-static pthread_mutex_t queue_mtx = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
+static std::deque<work_item *> queue;
+static std::mutex queue_mtx;
+static std::condition_variable queue_cv;
+static bool done = false;
 
 static void enqueue(work_item *item) {
-  pthread_mutex_lock(&queue_mtx);
-  queue[queue_tail++ % 256] = item;
-  pthread_cond_signal(&queue_cond);
-  pthread_mutex_unlock(&queue_mtx);
+  std::lock_guard<std::mutex> lk(queue_mtx);
+  queue.push_back(item);
+  queue_cv.notify_one();
 }
 
 static work_item *dequeue() {
-  pthread_mutex_lock(&queue_mtx);
-  while (queue_head == queue_tail && !done)
-    pthread_cond_wait(&queue_cond, &queue_mtx);
-  work_item *item = nullptr;
-  if (queue_head != queue_tail)
-    item = queue[queue_head++ % 256];
-  pthread_mutex_unlock(&queue_mtx);
+  std::unique_lock<std::mutex> lk(queue_mtx);
+  queue_cv.wait(lk, [] { return !queue.empty() || done; });
+  if (queue.empty())
+    return nullptr;
+  work_item *item = queue.front();
+  queue.pop_front();
   return item;
 }
 
-static void *consumer_thread(void *) {
+static void consumer_thread() {
   work_item *item;
   while ((item = dequeue()) != nullptr) {
-    FTR_SCOPE_FLOW_END("work", item); // creates its own scope
+    FTR_SCOPE_FLOW_END("work", item);
     fib(item->value);
-    ftr_logf("processed fib(%d)", item->value);
-    free(item);
+    delete item;
   }
-  return nullptr;
 }
 
 int main() {
   FTR_FUNCTION();
 
-  // Start consumer threads
-  pthread_t workers[2];
-  for (int i = 0; i < 2; i++)
-    pthread_create(&workers[i], nullptr, consumer_thread, nullptr);
+  int ncpus = std::thread::hardware_concurrency();
+  if (ncpus < 1)
+    ncpus = 1;
+
+  // Start one consumer thread per CPU
+  std::vector<std::thread> workers;
+  for (int i = 0; i < ncpus; i++)
+    workers.emplace_back(consumer_thread);
 
   // Producer: use the work_item pointer as the flow ID
-  for (int j = 0; j < 25; j++) {
-    work_item *item = (work_item *)malloc(sizeof(work_item));
-    item->value = 12 + (j % 5);
+  for (int j = 0; j < 25000; j++) {
+    auto *item = new work_item{12 + (j % 5)};
 
-    FTR_SCOPE_FLOW_BEGIN("work", item); // creates its own scope
+    FTR_SCOPE_FLOW_BEGIN("enqueue", item);
     enqueue(item);
-
-    FTR_SCOPE_FLOW_STEP("work submitted", item);
-    ftr_logf("enqueued job %d", j);
   }
 
   // Signal consumers to finish
-  pthread_mutex_lock(&queue_mtx);
-  done = 1;
-  pthread_cond_broadcast(&queue_cond);
-  pthread_mutex_unlock(&queue_mtx);
+  {
+    std::lock_guard<std::mutex> lk(queue_mtx);
+    done = true;
+  }
+  queue_cv.notify_all();
 
-  for (int i = 0; i < 2; i++)
-    pthread_join(workers[i], nullptr);
+  for (auto &w : workers)
+    w.join();
 
   return 0;
 }
