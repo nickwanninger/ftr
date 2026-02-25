@@ -94,6 +94,7 @@ static uint16_t intern_count = 0;
 
 #define FTR_SHARED_BUF_SIZE (256 * 1024 * 1024) // 256 KB
 
+static int trace_enabled = 0;
 static FILE *out_stream = NULL;
 static uint8_t shared_buf[FTR_SHARED_BUF_SIZE];
 static size_t shared_buf_pos = 0;
@@ -157,7 +158,7 @@ static inline void rec_str_padded(ftr_record_t *r, const char *s, size_t len) {
 }
 
 static void commit_record(ftr_record_t *r) {
-  if (!out_stream)
+  if (!__atomic_load_n(&trace_enabled, __ATOMIC_RELAXED))
     return;
   buf_lock();
   buf_append_locked(r->data, r->pos);
@@ -273,6 +274,12 @@ static void ftr_open(const char *trace_path) {
   fwrite(r.data, 1, r.pos, out_stream);
 
   ftr_set_process_name(os_getprogname());
+  __atomic_store_n(&trace_enabled, 1, __ATOMIC_RELEASE);
+}
+
+static void ftr_on_exit(void) {
+  if (__atomic_load_n(&trace_enabled, __ATOMIC_RELAXED))
+    ftr_close();
 }
 
 __attribute__((constructor)) static void ftr_init(void) {
@@ -280,9 +287,11 @@ __attribute__((constructor)) static void ftr_init(void) {
     return;
   const char *path = getenv("FTR_TRACE_PATH");
   ftr_open(path ? path : "trace.fxt.gz");
+  atexit(ftr_on_exit);
 }
 
 void ftr_close() {
+  __atomic_store_n(&trace_enabled, 0, __ATOMIC_RELEASE);
   buf_lock();
   flush_locked();
   buf_unlock();
@@ -291,11 +300,6 @@ void ftr_close() {
   else
     fclose(out_stream);
   out_stream = NULL;
-}
-
-__attribute__((destructor)) static void __ftr_on_exit(void) {
-  if (out_stream)
-    ftr_close();
 }
 
 ftr_timestamp_t ftr_now_ns(void) {
@@ -351,7 +355,7 @@ void ftr_write_span(uint64_t pid, uint64_t tid, const char *name,
 }
 
 uint16_t ftr_intern_string(const char *s) {
-  if (!out_stream)
+  if (!__atomic_load_n(&trace_enabled, __ATOMIC_RELAXED))
     return 0;
   for (uint16_t i = 0; i < intern_count; i++) {
     if (intern_pool[i].key == s)
