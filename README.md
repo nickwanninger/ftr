@@ -2,6 +2,8 @@
 
 A minimal [Fuchsia FXT](https://fuchsia.dev/fuchsia-src/reference/tracing/trace-format) trace writer for C/C++. Drop `src/ftr.c` and `src/ftr.h` into your build system, or build as a shared library. Traces can be viewed in [Perfetto](https://ui.perfetto.dev).
 
+<p align="center"><a href="#api">Jump to API docs</a></p>
+
 On x86, `ftr` uses rdtscp for timestamps after calibration, and has incredibly low overhead.
 On other platforms, it falls back to the more expensive `clock_gettime(CLOCK_MONOTONIC)` (rough nanosecond resolution) on other platforms (Aarch64).
 
