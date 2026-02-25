@@ -6,15 +6,20 @@ add_library(ftr_obj OBJECT src/ftr.c)
 target_include_directories(ftr_obj PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
   $<INSTALL_INTERFACE:include>)
+
+add_library(ftr_interface INTERFACE)
+target_include_directories(ftr_interface INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<INSTALL_INTERFACE:include>)
 set_target_properties(ftr_obj PROPERTIES
   C_STANDARD 11
   POSITION_INDEPENDENT_CODE ON)
 
 add_library(ftr SHARED $<TARGET_OBJECTS:ftr_obj>)
-target_link_libraries(ftr PUBLIC ftr_obj)
+target_link_libraries(ftr PUBLIC ftr_obj ftr_interface)
 
 add_library(ftr_static STATIC $<TARGET_OBJECTS:ftr_obj>)
-target_link_libraries(ftr_static PUBLIC ftr_obj)
+target_link_libraries(ftr_static PUBLIC ftr_obj ftr_interface)
 set_target_properties(ftr_static PROPERTIES OUTPUT_NAME ftr)
 
 # Examples — build every .cpp in examples/
@@ -33,7 +38,7 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-install(TARGETS ftr_obj ftr ftr_static EXPORT ftrTargets
+install(TARGETS ftr_obj ftr ftr_static ftr_interface EXPORT ftrTargets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES src/ftr.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
