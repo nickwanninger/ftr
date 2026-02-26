@@ -96,9 +96,9 @@ static uint16_t intern_count = 0;
 
 static int trace_enabled = 0;
 static ftr_write_fn g_write_fn = NULL;
-static void        *g_write_userdata = NULL;
-static FILE        *g_file_handle = NULL;
-static int          g_file_is_pipe = 0;
+static void *g_write_userdata = NULL;
+static FILE *g_file_handle = NULL;
+static int g_file_is_pipe = 0;
 static uint8_t shared_buf[FTR_SHARED_BUF_SIZE];
 static size_t shared_buf_pos = 0;
 static atomic_flag shared_buf_lock = ATOMIC_FLAG_INIT;
@@ -111,33 +111,6 @@ static inline void buf_lock(void) {
 
 static inline void buf_unlock(void) {
   atomic_flag_clear_explicit(&shared_buf_lock, memory_order_release);
-}
-
-// Must be called with the lock held.
-static void flush_locked(void) {
-  if (shared_buf_pos == 0)
-    return;
-  if (g_write_fn)
-    g_write_fn(shared_buf, shared_buf_pos, g_write_userdata);
-  shared_buf_pos = 0;
-}
-
-// Append `len` bytes from `data` into the shared buffer, flushing first if
-// there isn't enough room.  The entire `len` bytes are guaranteed to land in a
-// single flush – a record is never split across two g_write_fn calls.
-// Must be called with the lock held.
-static void buf_append_locked(const void *data, size_t len) {
-  if (shared_buf_pos + len > FTR_SHARED_BUF_SIZE) {
-    flush_locked();
-  }
-  // Record larger than the whole buffer — write it directly so it stays atomic.
-  if (len > FTR_SHARED_BUF_SIZE) {
-    if (g_write_fn)
-      g_write_fn(data, len, g_write_userdata);
-    return;
-  }
-  memcpy(shared_buf + shared_buf_pos, data, len);
-  shared_buf_pos += len;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +140,77 @@ static inline void rec_str_padded(ftr_record_t *r, const char *s, size_t len) {
     memset(r->data + r->pos, 0, pad);
     r->pos += pad;
   }
+}
+
+static uint64_t g_ftr_pid = 0;
+
+static _Atomic uint64_t next_local_thread_id = 0;
+static __thread uint64_t g_ftr_tid = (uint64_t)-1;
+
+static uint64_t get_local_thread_id(void) {
+  if (g_ftr_tid == (uint64_t)-1) {
+    g_ftr_tid = atomic_fetch_add(&next_local_thread_id, 1);
+  }
+  return g_ftr_tid;
+}
+
+// Forward declaration — flush_locked and buf_append_locked are mutually
+// referential (buf_append_locked flushes when the buffer is full, and
+// flush_locked appends a duration record after writing).
+static void flush_locked(void);
+
+// Append `len` bytes from `data` into the shared buffer, flushing first if
+// there isn't enough room.  The entire `len` bytes are guaranteed to land in a
+// single flush – a record is never split across two g_write_fn calls.
+// Must be called with the lock held.
+static void buf_append_locked(const void *data, size_t len) {
+  if (shared_buf_pos + len > FTR_SHARED_BUF_SIZE) {
+    flush_locked();
+  }
+  // Record larger than the whole buffer — write it directly so it stays atomic.
+  if (len > FTR_SHARED_BUF_SIZE) {
+    if (g_write_fn)
+      g_write_fn(data, len, g_write_userdata);
+    return;
+  }
+  memcpy(shared_buf + shared_buf_pos, data, len);
+  shared_buf_pos += len;
+}
+
+// Must be called with the lock held.
+static void flush_locked(void) {
+  if (shared_buf_pos == 0)
+    return;
+
+  ftr_timestamp_t start_ns = ftr_now_ns();
+  if (g_write_fn)
+    g_write_fn(shared_buf, shared_buf_pos, g_write_userdata);
+  shared_buf_pos = 0;
+  ftr_timestamp_t end_ns = ftr_now_ns();
+
+  // Record the flush itself as a duration event with inline name.
+  static const char flush_name[] = "-flush-";
+  size_t name_len = sizeof(flush_name) - 1;
+  size_t name_words = (name_len + 7) / 8;
+  size_t size_words = 1 + 3 + name_words + 1;
+
+  fxt_event_hdr ev = {0};
+  ev.type = 4;
+  ev.size_words = (uint64_t)size_words;
+  ev.event_type = 4;
+  ev.arg_count = 0;
+  ev.thread_ref = 0;
+  ev.name_ref = (uint16_t)(0x8000 | name_len);
+  ev.category_ref = 0;
+
+  ftr_record_t r = {.pos = 0};
+  rec_u64(&r, ev.raw);
+  rec_u64(&r, start_ns);
+  rec_u64(&r, g_ftr_pid);
+  rec_u64(&r, get_local_thread_id());
+  rec_str_padded(&r, flush_name, name_len);
+  rec_u64(&r, end_ns);
+  buf_append_locked(r.data, r.pos);
 }
 
 static void commit_record(ftr_record_t *r) {
@@ -236,18 +280,6 @@ static uint64_t tsc_freq_calibrate(void) {
 
 void ftr_debug_dump(void) {}
 
-static uint64_t g_ftr_pid = 0;
-
-static _Atomic uint64_t next_local_thread_id = 0;
-static __thread uint64_t g_ftr_tid = (uint64_t)-1;
-
-static uint64_t get_local_thread_id(void) {
-  if (g_ftr_tid == (uint64_t)-1) {
-    g_ftr_tid = atomic_fetch_add(&next_local_thread_id, 1);
-  }
-  return g_ftr_tid;
-}
-
 static void file_write_fn(const void *data, size_t len, void *userdata) {
   fwrite(data, 1, len, (FILE *)userdata);
 }
@@ -268,7 +300,8 @@ static void ftr_do_init(void) {
          (unsigned long)ticks_per_sec);
 #endif
 
-  // Write header directly — trace_enabled is still 0, so commit_record would drop it.
+  // Write header directly — trace_enabled is still 0, so commit_record would
+  // drop it.
   ftr_record_t r = {.pos = 0};
   rec_u64(&r, FXT_MAGIC);
   fxt_init_hdr init = {0};
@@ -294,8 +327,10 @@ void ftr_init(ftr_write_fn write_fn, void *userdata) {
 void ftr_init_file(const char *path) {
   if (__atomic_load_n(&trace_enabled, __ATOMIC_RELAXED))
     return;
-  if (!path) path = getenv("FTR_TRACE_PATH");
-  if (!path) path = "trace.fxt.gz";
+  if (!path)
+    path = getenv("FTR_TRACE_PATH");
+  if (!path)
+    path = "trace.fxt.gz";
 
   size_t len = strlen(path);
   if (len > 3 && strcmp(path + len - 3, ".gz") == 0) {
@@ -329,8 +364,10 @@ void ftr_close(void) {
   flush_locked();
   buf_unlock();
   if (g_file_handle) {
-    if (g_file_is_pipe) pclose(g_file_handle);
-    else fclose(g_file_handle);
+    if (g_file_is_pipe)
+      pclose(g_file_handle);
+    else
+      fclose(g_file_handle);
     g_file_handle = NULL;
   }
   g_write_fn = NULL;
