@@ -72,7 +72,7 @@ int main() {
     workers.emplace_back(consumer_thread);
 
   // Producer: use the work_item pointer as the flow ID
-  for (int j = 0; j < 100; j++) {
+  for (int j = 0; j < 1000; j++) {
     auto *item = new work_item{100};
 
     FTR_SCOPE_FLOW_BEGIN("enqueue", item);
