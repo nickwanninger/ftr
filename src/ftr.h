@@ -94,6 +94,7 @@ static inline void ftr_end_event(struct ftr_event_t *e) {
 #define FTR_FUNCTION()
 #define FTR_MARK(name)
 #define FTR_COUNTER(name, value)
+#define FTR_EXPR(name, expr) (expr)
 #define FTR_SCOPE_FLOW_BEGIN(name, flow_id)
 #define FTR_SCOPE_FLOW_STEP(name, flow_id)
 #define FTR_SCOPE_FLOW_END(name, flow_id)
@@ -111,6 +112,21 @@ static inline void ftr_end_event(struct ftr_event_t *e) {
 // __func__ has a stable per-function pointer in practice (it's a static local
 // array), so we can use the same static-cache trick as FTR_SCOPE.
 #define FTR_FUNCTION() FTR_SCOPE(__PRETTY_FUNCTION__)
+
+// Trace the duration of evaluating expr and return its value.
+// Uses a GCC/Clang statement expression ({ ... }) — not standard C99 but
+// universally supported by the compilers this library targets.
+#define FTR_EXPR(name, expr)                                                   \
+  __extension__({                                                              \
+    static ftr_str_t FTR_CONCAT(__idx_, __LINE__) = 0;                        \
+    if (FTR_CONCAT(__idx_, __LINE__) == 0)                                     \
+      FTR_CONCAT(__idx_, __LINE__) = ftr_intern_string(name);                 \
+    struct ftr_event_t FTR_CONCAT(__event_, __LINE__) =                       \
+        ftr_begin_event(FTR_CONCAT(__idx_, __LINE__));                         \
+    __auto_type FTR_CONCAT(__result_, __LINE__) = (expr);                     \
+    ftr_end_event(&FTR_CONCAT(__event_, __LINE__));                            \
+    FTR_CONCAT(__result_, __LINE__);                                           \
+  })
 
 #define FTR_MARK(name)                                                         \
   do {                                                                         \

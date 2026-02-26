@@ -22,15 +22,20 @@ add_library(ftr_static STATIC $<TARGET_OBJECTS:ftr_obj>)
 target_link_libraries(ftr_static PUBLIC ftr_obj ftr_interface)
 set_target_properties(ftr_static PROPERTIES OUTPUT_NAME ftr)
 
-# Examples — build every .cpp in examples/
+# Examples — build every .c and .cpp in examples/
 option(FTR_BUILD_EXAMPLES "Build example programs" ON)
 if(FTR_BUILD_EXAMPLES)
-  file(GLOB EXAMPLE_SRCS examples/*.cpp)
+  file(GLOB EXAMPLE_SRCS examples/*.cpp examples/*.c)
   foreach(src ${EXAMPLE_SRCS})
     get_filename_component(name ${src} NAME_WE)
+    get_filename_component(ext ${src} EXT)
     add_executable(${name} ${src})
     target_link_libraries(${name} PRIVATE ftr)
-    set_target_properties(${name} PROPERTIES CXX_STANDARD 17)
+    if(ext STREQUAL ".c")
+      set_target_properties(${name} PROPERTIES C_STANDARD 11)
+    else()
+      set_target_properties(${name} PROPERTIES CXX_STANDARD 17)
+    endif()
   endforeach()
 endif()
 
