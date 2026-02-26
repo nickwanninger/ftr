@@ -66,6 +66,20 @@ ftr_init(my_write_fn, my_userdata);
 - **`FTR_SCOPE(name)`** — Records a duration span from this point to the end of the enclosing block. The name _must_ be a `const char *` (static string).
 - **`FTR_FUNCTION()`** — Shorthand for `FTR_SCOPE(__PRETTY_FUNCTION__)`.
 
+### Expression tracing
+
+- **`FTR_EXPR(name, expr)`** — Wraps the evaluation of `expr` in a duration span and returns its value. Use this to trace a single expression inline without introducing a new scope block.
+
+```c
+// Trace just the syscall, capture its return value
+int ret = FTR_EXPR("usleep", usleep(100));
+
+// Works with any expression type
+size_t n = FTR_EXPR("fread", fread(buf, 1, sizeof(buf), fp));
+```
+
+> **Note:** Requires GCC or Clang — uses the `({ ... })` statement expression extension. This is not standard C99 but is universally supported by the compilers ftr targets.
+
 ### Marks and counters
 
 - **`FTR_MARK(name)`** — Emits an instant event (a single point in time).
